@@ -1,0 +1,5 @@
+{
+  "name": "permission-manager",
+  "description": "分析 skill 权限需求、扫描项目构建工具、一键授权 — Claude Code 权限管理器",
+  "version": "1.0.0"
+}

@@ -13,6 +13,11 @@
       "name": "migrate-config",
       "source": "./migrate-config",
       "description": "导出/导入 Claude Code 完整配置（settings、marketplaces、plugins、skills），一键在新机器上复现环境"
+    },
+    {
+      "name": "permission-manager",
+      "source": "./permission-manager",
+      "description": "分析 skill 权限需求、扫描项目构建工具、一键授权 — Claude Code 权限管理器"
     }
   ]
 }
