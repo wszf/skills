@@ -17,7 +17,7 @@
     {
       "name": "permission-manager",
       "source": "./permission-manager",
-      "description": "分析 skill 权限需求、扫描项目构建工具、一键授权 — Claude Code 权限管理器"
+      "description": "Claude Code 权限管理器 — 扫描 skill 权限需求、检测项目构建工具链、补全常用命令，一键写入配置"
     }
   ]
 }

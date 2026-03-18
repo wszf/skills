@@ -1,11 +1,11 @@
 ---
 name: permission-manager
-description: 分析 skill 权限需求、扫描项目构建工具、一键授权 — Claude Code 权限管理器
+description: Claude Code 权限管理器 — 扫描 skill 权限需求、检测项目构建工具链、补全常用命令，一键写入配置
 ---
 
 # Permission Manager
 
-管理 Claude Code 的 Bash 命令权限：分析 skill 所需权限、扫描项目构建工具链、写入配置。
+Claude Code 权限管理器：自动分析 skill 所需权限、检测项目构建工具链和语言环境、补全 Claude 高频使用的系统命令，统一写入配置。
 
 ### 权限配置层级
 
