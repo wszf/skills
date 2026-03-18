@@ -1,0 +1,18 @@
+{
+  "name": "wszf-skills",
+  "owner": {
+    "name": "wszf",
+    "email": "wszfer@gmail.com"
+  },
+  "metadata": {
+    "description": "A collection of productivity skills for Claude Code",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "migrate-config",
+      "source": "./migrate-config",
+      "description": "导出/导入 Claude Code 完整配置（settings、marketplaces、plugins、skills），一键在新机器上复现环境"
+    }
+  ]
+}

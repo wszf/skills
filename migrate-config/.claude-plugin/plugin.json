@@ -1,0 +1,5 @@
+{
+  "name": "migrate-config",
+  "description": "导出/导入 Claude Code 完整配置（settings、marketplaces、plugins、skills），一键在新机器上复现环境",
+  "version": "1.0.0"
+}
