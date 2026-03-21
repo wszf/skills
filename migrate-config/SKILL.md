@@ -1,21 +1,107 @@
 ---
 name: migrate-config
-description: 导出/导入 Claude Code 完整配置（settings、marketplaces、plugins、skills），一键在新机器上复现环境
+description: 导出/导入 Claude Code 完整配置（settings、marketplaces、plugins、skills），支持文件导出和 Git 仓库同步
 ---
 
 # Migrate Config
 
-一键导出/导入 Claude Code 完整运行环境。
+一键导出/导入 Claude Code 完整运行环境。支持导出为本地脚本文件，或推送到 Git 仓库实现跨机器同步。
 
 ## 用法
 
 | 命令 | 说明 |
 |------|------|
-| `/migrate-config export` | 导出配置到 `~/claude-setup.sh` |
-| `/migrate-config export --output <path>` | 指定输出路径 |
-| `/migrate-config import <script-path>` | 在新机器上执行导入 |
+| `/migrate-config export` | 交互选择导出方式（文件 / Git 仓库） |
+| `/migrate-config export --output <path>` | 导出配置到指定文件路径 |
+| `/migrate-config export --git <repo-url>` | 导出配置到 Git 仓库（跳过方式选择） |
+| `/migrate-config import <script-path>` | 从本地脚本文件导入 |
+| `/migrate-config import --git <repo-url>` | 从 Git 仓库 clone 并导入 |
 
 ## Export 流程
+
+### Step 0: 选择导出方式
+
+> 如果命令行已指定 `--output` 或 `--git`，跳过此步骤，直接进入 Step 1。
+
+用 AskUserQuestion 询问导出方式：
+
+```
+请选择配置导出方式：
+```
+
+| 选项 | 说明 |
+|------|------|
+| **导出为脚本文件（推荐）** | 生成自包含的 `claude-setup.sh` 安装脚本，可离线使用，适合一次性迁移 |
+| **推送到 Git 仓库** | 将配置文件推送到 Git 仓库，适合多台机器持续同步。需要提供仓库 URL |
+
+**如果用户选择「推送到 Git 仓库」**，用 AskUserQuestion 追问仓库 URL：
+
+```
+请输入 Git 仓库 URL（支持 HTTPS 和 SSH）：
+```
+
+选项：
+- **手动输入** — 用户在 Other 中填写仓库 URL（如 `https://github.com/user/claude-config.git` 或 `git@github.com:user/claude-config.git`）
+
+> 无预设选项，用户必须通过 Other 输入。拿到 URL 后立即执行 **Git 仓库权限检测**（见下文），通过后再继续 Step 1。
+
+#### Git 仓库权限检测
+
+在确定仓库 URL 后、扫描配置之前，必须验证仓库可访问且有 push 权限。
+
+**检测流程**：
+
+```bash
+# 1. 检查 git 是否可用
+command -v git &>/dev/null || { echo "[FAIL] git 未安装"; exit 1; }
+
+# 2. 尝试 ls-remote 验证仓库可达性和读权限
+if ! git ls-remote "$REPO_URL" HEAD 2>/tmp/claude-git-check.log; then
+    ERROR=$(cat /tmp/claude-git-check.log)
+    # 根据错误信息分类提示
+    # - "Permission denied (publickey)" → SSH Key 未配置
+    # - "Repository not found" → 仓库不存在或无权限
+    # - "Could not resolve host" → 网络问题
+    echo "[FAIL] 无法访问仓库: $REPO_URL"
+    echo "$ERROR"
+    exit 1
+fi
+
+# 3. 验证 push 权限（通过 clone + 尝试 push 空提交检测）
+#    对于新仓库（空仓库），ls-remote 成功即认为有权限
+#    对于已有仓库，clone 后检查是否能 push：
+TEMP_DIR=$(mktemp -d)
+if git clone --depth 1 --quiet "$REPO_URL" "$TEMP_DIR/test-repo" 2>/dev/null; then
+    cd "$TEMP_DIR/test-repo"
+    # 尝试 dry-run push 检测写权限
+    if ! git push --dry-run 2>/tmp/claude-git-push-check.log; then
+        echo "[FAIL] 有读权限但无 push 权限"
+        echo "$(cat /tmp/claude-git-push-check.log)"
+        rm -rf "$TEMP_DIR"
+        exit 1
+    fi
+    cd -
+    rm -rf "$TEMP_DIR"
+else
+    # clone 失败但 ls-remote 成功 → 可能是空仓库，继续
+    rm -rf "$TEMP_DIR"
+fi
+
+echo "[OK] 仓库可访问且有 push 权限"
+```
+
+**错误处理映射**：
+
+| 错误类型 | 错误特征 | 提示信息 |
+|---------|---------|---------|
+| SSH Key 缺失 | `Permission denied (publickey)` | `SSH Key 未配置或未添加到 ssh-agent。运行 ssh-add ~/.ssh/id_rsa 或检查 Git 平台的 SSH Key 设置` |
+| 仓库不存在 | `Repository not found` | `仓库不存在。请先在 Git 平台创建仓库，或检查 URL 是否正确` |
+| 网络不可达 | `Could not resolve host` | `无法解析主机名，请检查网络连接` |
+| 无 push 权限 | `push --dry-run` 失败 | `有读权限但无 push 权限。请检查仓库权限设置（需要 write/push 权限）` |
+| Token 过期 | `401` / `403` | `认证失败或 Token 过期，请更新 Git 凭据` |
+
+> 检测失败时终止流程，显示错误信息和修复建议，不继续扫描。
+> 检测通过后输出 `[OK] 仓库可访问且有 push 权限`，继续 Step 1。
 
 ### Step 1: 扫描当前配置
 
@@ -195,7 +281,13 @@ done
 tar -czf /tmp/claude-local-skills.tar.gz -C ~/.claude --exclude='.git' "${LOCAL_SKILLS[@]}"
 ```
 
-### Step 4: 生成安装脚本
+### Step 4: 根据导出方式分流
+
+> 从 Step 0 选择的导出方式决定接下来的路径：
+> - **文件模式** → Step 4a（生成安装脚本）
+> - **Git 仓库模式** → Step 4b（推送到 Git 仓库）
+
+### Step 4a: 生成安装脚本（文件模式）
 
 生成 `claude-setup.sh`，结构如下：
 
@@ -305,7 +397,7 @@ __SKILLS_ARCHIVE__
 <仅 local skills 的 base64 编码 tar.gz 数据>
 ```
 
-### Step 5: 组装最终文件
+### Step 5a: 组装最终文件（文件模式）
 
 **⚠ 重要：必须使用 Bash 工具写入脚本文件，禁止使用 Write 工具。** Write 工具会在用户界面展示完整文件 diff（几百行脚本内容），体验极差。用 Bash 的 `cat << 'EOF' > file` 方式写入可避免这个问题。
 
@@ -325,7 +417,7 @@ chmod +x ~/claude-setup.sh
 
 > 注意：如果用户选择了某些 Git Skill 也本地打包，将它们一起加入 tar 命令（带 `--exclude='.git'`）。
 
-### Step 6: 输出
+### Step 6a: 输出（文件模式）
 
 - 显示文件路径和大小
 - 显示包含的组件清单，分类标注安装方式：
@@ -337,6 +429,232 @@ chmod +x ~/claude-setup.sh
   - Local Skill: K 个 (base64 内嵌)
   - 可选: settings.local.json、项目记忆等
 - 提示使用方法
+
+### Step 4b: 推送到 Git 仓库（Git 仓库模式）
+
+将配置组织为目录结构，推送到 Git 仓库。
+
+#### 目录结构
+
+在临时目录中组织以下结构：
+
+```
+claude-config/
+├── README.md                          # 自动生成的说明文件
+├── settings.json                      # 核心设置（脱敏后）
+├── settings.local.json                # 本地设置覆盖（可选，脱敏后）
+├── CLAUDE.md                          # 全局用户指令（如果存在）
+├── agents/                            # 自定义 agent 定义
+│   └── *.md
+├── plugins/
+│   └── known_marketplaces.json        # marketplace 来源列表（路径已替换为占位符）
+├── skills/                            # 仅 Local Skills（tar.gz 打包，排除 .git）
+│   └── local-skills.tar.gz            # 所有本地 skill 的压缩包
+├── projects/                          # 可选：项目记忆
+│   └── <project-name>/
+│       └── memory/
+│           ├── MEMORY.md
+│           └── *.md
+├── git-skills.json                    # Git Skills 的 URL 清单（网络拉取用）
+└── install.sh                         # 自动安装脚本（从仓库恢复配置）
+```
+
+#### git-skills.json 格式
+
+```json
+{
+  "skills": [
+    {
+      "name": "gstack",
+      "url": "https://github.com/garrytan/gstack.git",
+      "type": "git_clone"
+    },
+    {
+      "name": "get-shit-done",
+      "url": "git@github.com:gsd-build/get-shit-done.git",
+      "type": "git_clone",
+      "note": "SSH/私有仓库，需要对应 SSH Key"
+    }
+  ],
+  "marketplaces": [
+    {
+      "name": "marketplace-name",
+      "url": "https://github.com/org/marketplace.git"
+    }
+  ]
+}
+```
+
+#### install.sh（仓库内嵌安装脚本）
+
+生成一个轻量安装脚本，放在仓库根目录，用户 clone 后执行即可恢复：
+
+```bash
+#!/bin/bash
+set -e
+CLAUDE_DIR="$HOME/.claude"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+echo "===== Claude Code 配置恢复 ====="
+
+# 1. settings.json
+mkdir -p "$CLAUDE_DIR"
+[ -f "$CLAUDE_DIR/settings.json" ] && cp "$CLAUDE_DIR/settings.json" "$CLAUDE_DIR/settings.json.bak"
+cp "$SCRIPT_DIR/settings.json" "$CLAUDE_DIR/settings.json"
+echo "[OK] settings.json"
+
+# 2. settings.local.json（如果存在）
+[ -f "$SCRIPT_DIR/settings.local.json" ] && cp "$SCRIPT_DIR/settings.local.json" "$CLAUDE_DIR/settings.local.json" && echo "[OK] settings.local.json"
+
+# 3. CLAUDE.md
+[ -f "$SCRIPT_DIR/CLAUDE.md" ] && cp "$SCRIPT_DIR/CLAUDE.md" "$CLAUDE_DIR/CLAUDE.md" && echo "[OK] CLAUDE.md"
+
+# 4. Agents
+if [ -d "$SCRIPT_DIR/agents" ]; then
+    mkdir -p "$CLAUDE_DIR/agents"
+    cp "$SCRIPT_DIR/agents/"*.md "$CLAUDE_DIR/agents/" 2>/dev/null && echo "[OK] agents"
+fi
+
+# 5. Marketplaces（从 git-skills.json 读取 URL 并 clone）
+if command -v jq &>/dev/null && [ -f "$SCRIPT_DIR/git-skills.json" ]; then
+    mkdir -p "$CLAUDE_DIR/plugins/marketplaces"
+    jq -r '.marketplaces[]? | "\(.name) \(.url)"' "$SCRIPT_DIR/git-skills.json" | while read name url; do
+        if [ -d "$CLAUDE_DIR/plugins/marketplaces/$name" ]; then
+            (cd "$CLAUDE_DIR/plugins/marketplaces/$name" && git pull --quiet 2>/dev/null || true)
+            echo "[SKIP] marketplace: $name (pull 更新)"
+        else
+            git clone --quiet "$url" "$CLAUDE_DIR/plugins/marketplaces/$name" 2>/dev/null && echo "[CLONE] marketplace: $name" || echo "[FAIL] marketplace: $name"
+        fi
+    done
+    # 恢复 known_marketplaces.json（路径替换为本机路径）
+    cp "$SCRIPT_DIR/plugins/known_marketplaces.json" "$CLAUDE_DIR/plugins/known_marketplaces.json"
+    # sed 替换 installLocation 中的占位符为实际路径
+    sed -i.bak "s|\\\$CLAUDE_DIR|$CLAUDE_DIR|g" "$CLAUDE_DIR/plugins/known_marketplaces.json"
+    rm -f "$CLAUDE_DIR/plugins/known_marketplaces.json.bak"
+fi
+
+# 6. Git Skills（从 git-skills.json 读取 URL 并 clone）
+if command -v jq &>/dev/null && [ -f "$SCRIPT_DIR/git-skills.json" ]; then
+    mkdir -p "$CLAUDE_DIR/skills"
+    GIT_FAILURES=0
+    jq -r '.skills[]? | "\(.name) \(.url)"' "$SCRIPT_DIR/git-skills.json" | while read name url; do
+        if [ -d "$CLAUDE_DIR/skills/$name" ]; then
+            (cd "$CLAUDE_DIR/skills/$name" && git pull --quiet 2>/dev/null || true)
+            echo "[SKIP] skill: $name (pull 更新)"
+        else
+            if git clone --quiet "$url" "$CLAUDE_DIR/skills/$name" 2>/dev/null; then
+                echo "[CLONE] skill: $name"
+            else
+                echo "[FAIL] skill: $name ($url)"
+                GIT_FAILURES=$((GIT_FAILURES + 1))
+            fi
+        fi
+    done
+fi
+
+# 7. Local Skills（解压 tar.gz）
+if [ -f "$SCRIPT_DIR/skills/local-skills.tar.gz" ]; then
+    tar -xzf "$SCRIPT_DIR/skills/local-skills.tar.gz" -C "$CLAUDE_DIR"
+    echo "[OK] local skills"
+fi
+
+# 8. 项目记忆（如果有）
+if [ -d "$SCRIPT_DIR/projects" ]; then
+    for proj_dir in "$SCRIPT_DIR/projects"/*/; do
+        proj_name=$(basename "$proj_dir")
+        # 提醒用户项目路径可能需要调整
+        echo "[INFO] 项目记忆: $proj_name — 已复制，如用户名不同请手动重命名目录"
+        mkdir -p "$CLAUDE_DIR/projects/$proj_name/memory"
+        cp -r "$proj_dir/memory/"* "$CLAUDE_DIR/projects/$proj_name/memory/" 2>/dev/null || true
+    done
+fi
+
+echo ""
+echo "===== 恢复完成 ====="
+echo "⚠ 请检查 settings.json 中的脱敏占位符（如 <YOUR_TOKEN_HERE>），填入实际值"
+```
+
+#### 推送流程
+
+```bash
+# Claude 执行步骤：
+
+# 1. 创建临时工作目录
+WORK_DIR=$(mktemp -d)
+
+# 2. 尝试 clone 已有仓库，或初始化新仓库
+if git clone --quiet "$REPO_URL" "$WORK_DIR/claude-config" 2>/dev/null; then
+    echo "[OK] clone 已有仓库"
+    cd "$WORK_DIR/claude-config"
+    # 清空旧内容（保留 .git）
+    find . -maxdepth 1 ! -name '.git' ! -name '.' -exec rm -rf {} +
+else
+    echo "[INFO] 仓库为空或 clone 失败，初始化新仓库"
+    mkdir -p "$WORK_DIR/claude-config"
+    cd "$WORK_DIR/claude-config"
+    git init --quiet
+    git remote add origin "$REPO_URL"
+fi
+
+# 3. 复制配置文件到工作目录（按上述目录结构）
+cp <脱敏后的 settings.json> .
+cp <CLAUDE.md, agents/, plugins/, etc.> .
+# Local Skills 打包为 tar.gz
+mkdir -p skills
+tar -czf skills/local-skills.tar.gz -C ~/.claude --exclude='.git' <local skill 列表>
+# 生成 git-skills.json
+# 生成 install.sh
+# 生成 README.md
+
+# 4. 生成 README.md
+cat > README.md << 'EOF'
+# Claude Code Configuration
+
+此仓库由 `/migrate-config export --git` 自动生成，包含 Claude Code 运行环境配置。
+
+## 使用方法
+
+在新机器上执行：
+
+```bash
+git clone <此仓库 URL> ~/claude-config
+cd ~/claude-config
+bash install.sh
+```
+
+## 注意事项
+
+- `settings.json` 中的敏感信息已替换为占位符，请手动填入
+- Git Skills 需要目标机器有对应的访问权限
+- 项目记忆路径包含源机器用户名，如不同请手动重命名
+EOF
+
+# 5. Commit & Push
+git add -A
+git commit -m "chore: export Claude Code configuration ($(date +%Y-%m-%d))"
+
+# 对于新仓库（无 upstream）
+git push -u origin main 2>/dev/null || git push -u origin master 2>/dev/null
+
+# 对于已有仓库
+git push
+```
+
+#### 输出（Git 仓库模式）
+
+- 显示推送结果（成功/失败）
+- 显示仓库 URL
+- 显示包含的组件清单（同 Step 6a）
+- 提示导入方法：
+  ```
+  在新机器上执行：
+    git clone <repo-url> ~/claude-config
+    cd ~/claude-config
+    bash install.sh
+  或使用：
+    /migrate-config import --git <repo-url>
+  ```
+- 清理临时目录
 
 ## 关键实现细节
 
@@ -362,10 +680,17 @@ chmod +x ~/claude-setup.sh
     - 扫描配置
     - 可选组件交互
     - 分类 Skills 并交互
-    - 生成安装脚本
+    - 生成安装脚本 / 推送到 Git 仓库
     - 打包并输出结果
+17. **Git 仓库权限检测**：必须在扫描配置之前完成，失败则终止流程并给出修复建议
+18. **Git 仓库导出幂等性**：每次 export 都覆盖仓库全部内容（保留 .git 历史），commit message 带日期便于追溯
+19. **Git 仓库 install.sh 可独立运行**：不依赖 Claude Code，纯 bash + git + jq（jq 可选，无 jq 时跳过 Git Skills 的自动 clone，提示手动安装）
+20. **Git 仓库脱敏**：与文件模式相同的脱敏规则，settings.json 推送到仓库前必须脱敏
+21. **Git 仓库分支**：默认使用 `main` 分支，如果远程默认分支是 `master` 则跟随
 
 ## Import 流程
+
+### 文件导入
 
 当用户执行 `/migrate-config import <path>` 时：
 
@@ -373,6 +698,23 @@ chmod +x ~/claude-setup.sh
 2. 展示脚本包含的组件摘要（grep 关键标记）
 3. 确认后执行：`bash <path>`
 4. 验证结果
+
+### Git 仓库导入
+
+当用户执行 `/migrate-config import --git <repo-url>` 时：
+
+1. **权限检测**：执行与 Export 相同的 Git 仓库权限检测（见 Step 0），验证仓库可达性和读权限
+2. **Clone 仓库**：
+   ```bash
+   TEMP_DIR=$(mktemp -d)
+   git clone --depth 1 "$REPO_URL" "$TEMP_DIR/claude-config"
+   ```
+3. **检查仓库结构**：验证 `install.sh` 和 `settings.json` 是否存在
+   - 如果不存在 → 报错：`该仓库不是有效的 Claude Code 配置仓库（缺少 install.sh）`
+4. **展示组件摘要**：读取仓库内容，列出将要恢复的组件
+5. **确认后执行**：`bash "$TEMP_DIR/claude-config/install.sh"`
+6. **验证结果**：检查各组件是否正确恢复
+7. **清理临时目录**：`rm -rf "$TEMP_DIR"`
 
 ## 体积优化效果
 
