@@ -18,6 +18,11 @@
       "name": "permission-manager",
       "source": "./permission-manager",
       "description": "Claude Code 权限管理器 — 扫描 skill 权限需求、检测项目构建工具链、补全常用命令，一键写入配置"
+    },
+    {
+      "name": "handoff",
+      "source": "./handoff",
+      "description": "在上下文接近上限或需要切换会话时，生成结构化交接文档给下一位 AI Agent"
     }
   ]
 }

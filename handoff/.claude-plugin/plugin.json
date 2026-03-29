@@ -1,0 +1,5 @@
+{
+  "name": "handoff",
+  "description": "在上下文接近上限或需要切换会话时，生成结构化交接文档给下一位 AI Agent",
+  "version": "1.0.0"
+}
