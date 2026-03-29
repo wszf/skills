@@ -8,6 +8,7 @@ My collection of custom Claude Code skills for productivity and automation.
 |-------|-------------|
 | [migrate-config](./migrate-config/) | 导出/导入 Claude Code 完整配置，一键在新机器上复现环境 |
 | [permission-manager](./permission-manager/) | Claude Code 权限管理器 — 扫描 skill 权限、检测构建工具链、补全常用命令 |
+| [handoff](./handoff/) | 会话交接文档生成 — 上下文耗尽或保存进度时，生成结构化交接给下一位 Agent |
 
 ## Installation
 
